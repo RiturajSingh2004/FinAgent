@@ -1,5 +1,7 @@
 # FinAgent - ML Investment Strategist
 
+<img src="logo.png" alt="FinAgent Logo" width="100" />
+
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/streamlit-1.22.0+-red.svg)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -7,8 +9,6 @@
 [![Text: Gemma](https://img.shields.io/badge/Text-Gemma-purple.svg)](https://huggingface.co/google/gemma-3-1b)
 
 AI-powered investment portfolio generator that creates personalized investment strategies based on your financial profile and risk tolerance.
-
-![FinAgent Screenshot](https://via.placeholder.com/800x450?text=FinAgent+Dashboard)
 
 ## 📊 Features
 
