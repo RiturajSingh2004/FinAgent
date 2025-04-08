@@ -553,4 +553,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ---
 
-© 2025 Rituraj Singh | [GitHub](https://github.com/riturajsingh) | [LinkedIn](https://linkedin.com/in/riturajsingh)
+© 2025 Rituraj Singh | [GitHub](https://github.com/RiturajSingh2004) | [LinkedIn](https://linkedin.com/in/riturajsingh2004)
