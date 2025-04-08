@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import yfinance as yf
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -200,27 +202,144 @@ if submitted:
     
     # Display progress message
     with st.spinner("Analyzing market data and generating your personalized portfolio..."):
-        # Generate portfolio
-        portfolio = portfolio_generator.generate_portfolio(user_profile)
-        
-        # Enhance with market data
-        portfolio = portfolio_generator.enhance_portfolio_with_market_data(portfolio)
-        
-        # Get market sentiment
-        market_news = [
-            "Federal Reserve maintains current interest rates",
-            "Tech sector reports strong quarterly earnings",
-            "Consumer confidence index rises for third consecutive month",
-            "International markets show mixed performance amid geopolitical tensions",
-            "Supply chain issues starting to resolve according to latest economic indicators"
-        ]
-        sentiment_results = sentiment_analyzer.analyze_multiple_texts(market_news)
-        market_sentiment = sentiment_analyzer.get_sentiment_summary(sentiment_results)
-        
-        # Generate investment rationale
-        investment_rationale = text_generator.generate_investment_rationale(
-            portfolio, user_profile, market_sentiment
-        )
+        try:
+            # Generate portfolio
+            portfolio = portfolio_generator.generate_portfolio(user_profile)
+            
+            # Enhance with actual market data
+            portfolio = portfolio_generator.enhance_portfolio_with_market_data(portfolio)
+            
+            # Get up-to-date market news from Yahoo Finance
+            market_news = []
+            try:
+                # Try to get real market news using yfinance
+                news_data = yf.Ticker("^GSPC").news  # S&P 500 news
+                if news_data and len(news_data) >= 5:
+                    for i in range(min(5, len(news_data))):
+                        if 'title' in news_data[i]:
+                            market_news.append(news_data[i]['title'])
+                
+                # If we couldn't get enough news, add some default items
+                if len(market_news) < 3:
+                    raise Exception("Not enough news items retrieved")
+                    
+            except Exception as e:
+                st.warning(f"Could not retrieve live market news (Error: {str(e)}). Using recent general market news instead.")
+                # Use recent general market news as fallback
+                market_news = [
+                    "Federal Reserve maintains current interest rates in latest meeting",
+                    "Tech sector reports quarterly earnings above analyst expectations",
+                    "Consumer confidence index shows improvement in economic outlook",
+                    "International markets respond to latest economic indicators",
+                    "Supply chain improvements reported across multiple industries"
+                ]
+            
+            # Analyze market sentiment using the news
+            sentiment_results = sentiment_analyzer.analyze_multiple_texts(market_news)
+            market_sentiment = sentiment_analyzer.get_sentiment_summary(sentiment_results)
+            
+            # Generate investment rationale
+            try:
+                investment_rationale = text_generator.generate_investment_rationale(
+                    portfolio, user_profile, market_sentiment
+                )
+                
+                # Check if the investment rationale is valid (not the repetitive text issue)
+                if (investment_rationale and 
+                    "Write in a professional" in investment_rationale and 
+                    "financial advice" in investment_rationale):
+                    # Fall back to template if we got the repetitive text
+                    st.warning("Using template-based investment rationale due to generation issue.")
+                    investment_rationale = text_generator._generate_template_rationale(
+                        risk_profile, 
+                        investment_horizon,
+                        "neutral" if not market_sentiment else 
+                            ("positive" if market_sentiment.get('overall_sentiment_score', 0) > 0.2 else
+                            "negative" if market_sentiment.get('overall_sentiment_score', 0) < -0.2 else "neutral"),
+                        portfolio['allocations'],
+                        investment_goal,
+                        "neutral, with mixed signals that suggest a balanced approach",
+                        "3-10 years" if investment_horizon == "medium_term" else 
+                            "1-3 years" if investment_horizon == "short_term" else "10+ years"
+                    )
+            except Exception as e:
+                st.warning(f"Could not generate custom investment rationale: {str(e)}")
+                # Fall back to template
+                investment_rationale = text_generator._generate_template_rationale(
+                    risk_profile, 
+                    investment_horizon,
+                    "neutral" if not market_sentiment else 
+                        ("positive" if market_sentiment.get('overall_sentiment_score', 0) > 0.2 else
+                        "negative" if market_sentiment.get('overall_sentiment_score', 0) < -0.2 else "neutral"),
+                    portfolio['allocations'],
+                    investment_goal,
+                    "neutral, with mixed signals that suggest a balanced approach",
+                    "3-10 years" if investment_horizon == "medium_term" else 
+                        "1-3 years" if investment_horizon == "short_term" else "10+ years"
+                )
+            
+            # Get real market data for historical performance
+            tickers = list(portfolio.get('ticker_allocation', {}).keys())
+            
+            # Add benchmark indexes for comparison
+            benchmark_tickers = ['SPY', 'AGG']  # S&P 500 ETF and Bond Aggregate ETF
+            all_tickers = list(set(tickers + benchmark_tickers))
+            
+            # Get one year of historical data
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365)
+            
+            # Create real price data for portfolio tickers
+            price_data = {}
+            for ticker in all_tickers:
+                try:
+                    stock = yf.Ticker(ticker)
+                    hist = stock.history(start=start_date, end=end_date)
+                    if not hist.empty:
+                        price_data[ticker] = hist
+                except Exception as e:
+                    st.warning(f"Could not retrieve data for {ticker}: {str(e)}")
+            
+            # Create portfolio performance data based on actual ticker allocations
+            if tickers and all(t in price_data for t in tickers):
+                # Calculate weighted portfolio performance
+                portfolio_df = pd.DataFrame(index=price_data[tickers[0]].index)
+                portfolio_df['Close'] = 0
+                
+                # Add weighted price of each ticker
+                for ticker, weight in portfolio['ticker_allocation'].items():
+                    if ticker in price_data:
+                        ticker_data = price_data[ticker]['Close']
+                        if len(ticker_data) > 0:
+                            # Normalize to start at 100 * weight
+                            normalized = ticker_data / ticker_data.iloc[0] * 100 * weight
+                            # Add to portfolio
+                            if len(normalized) == len(portfolio_df):
+                                portfolio_df['Close'] += normalized
+                            else:
+                                st.warning(f"Data length mismatch for {ticker}, skipping in portfolio calculation")
+                
+                price_data['Portfolio'] = portfolio_df
+            
+            # Create benchmark names dictionary for chart
+            display_names = {
+                'SPY': 'S&P 500 ETF', 
+                'AGG': 'US Bond Aggregate',
+                'Portfolio': 'Your Portfolio'
+            }
+            
+            # Prepare chart display tickers
+            chart_tickers = ['Portfolio']
+            if 'SPY' in price_data:
+                chart_tickers.append('SPY')
+            if 'AGG' in price_data:
+                chart_tickers.append('AGG')
+                
+        except Exception as e:
+            st.error(f"An error occurred while generating your portfolio: {str(e)}")
+            st.error("Please try again or contact support if the problem persists.")
+            # Still display the form
+            st.stop()
     
     # Display results
     st.header("Your Investment Profile")
@@ -270,8 +389,18 @@ if submitted:
     
     # Display market sentiment
     st.header("Market Sentiment Analysis")
-    sentiment_fig = visualizer.plot_sentiment_analysis(market_sentiment)
-    st.plotly_chart(sentiment_fig, use_container_width=True)
+    
+    # Create columns for news and sentiment
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("Latest Market News")
+        for i, news in enumerate(market_news):
+            st.markdown(f"- {news}")
+    
+    with col2:
+        sentiment_fig = visualizer.plot_sentiment_analysis(market_sentiment)
+        st.plotly_chart(sentiment_fig, use_container_width=True)
     
     # Display investment rationale
     st.header("Investment Strategy Rationale")
@@ -295,77 +424,160 @@ if submitted:
     allocation_df = pd.DataFrame(allocation_data)
     st.table(allocation_df)
     
-    # Historical performance and returns (for a complete app, this would use actual market data)
+    # Historical performance from actual market data
     st.header("Historical Performance Analysis")
-    st.info("This section would show the historical performance of your recommended portfolio compared to benchmarks. In a production version, this would use actual historical market data.")
     
-    # Create a random historical performance chart for demonstration
-    dates = pd.date_range(start='2022-01-01', end='2023-01-01', freq='B')
-    price_data = {}
+    if len(price_data) > 0:
+        # Plot historical performance using real data
+        performance_fig = visualizer.plot_historical_performance(
+            price_data, chart_tickers, 
+            title="One-Year Historical Performance"
+        )
+        st.plotly_chart(performance_fig, use_container_width=True)
+        
+        # Add explanation
+        st.markdown("""
+        This chart shows the actual historical performance of your recommended portfolio compared to common market benchmarks 
+        over the past year. The portfolio line represents the weighted performance of your allocated assets.
+        """)
+        
+        # Display return metrics
+        returns_data = []
+        for ticker in chart_tickers:
+            if ticker in price_data:
+                df = price_data[ticker]
+                if not df.empty:
+                    # Calculate return metrics
+                    total_return = (df['Close'].iloc[-1] / df['Close'].iloc[0] - 1) * 100
+                    
+                    # Calculate volatility (standard deviation of daily returns)
+                    daily_returns = df['Close'].pct_change().dropna()
+                    volatility = daily_returns.std() * np.sqrt(252) * 100  # Annualized, in percent
+                    
+                    # Add to returns data
+                    returns_data.append({
+                        'Investment': display_names.get(ticker, ticker),
+                        'Total Return (%)': f"{total_return:.2f}%",
+                        'Annualized Volatility (%)': f"{volatility:.2f}%"
+                    })
+        
+        # Display returns table
+        if returns_data:
+            st.subheader("Performance Metrics")
+            returns_df = pd.DataFrame(returns_data)
+            st.table(returns_df)
+    else:
+        st.info("Historical performance data could not be retrieved at this time. Please try again later.")
     
-    # S&P 500 proxy
-    sp500 = pd.DataFrame(index=dates)
-    sp500['Close'] = 100 * (1 + np.cumsum(np.random.normal(0.0005, 0.01, len(dates))))
-    price_data['S&P 500'] = sp500
+    # Calculate and display portfolio risk metrics
+    st.header("Portfolio Risk Analysis")
     
-    # Portfolio proxy with slightly better returns
-    portfolio_perf = pd.DataFrame(index=dates)
-    portfolio_perf['Close'] = 100 * (1 + np.cumsum(np.random.normal(0.0007, 0.009, len(dates))))
-    price_data['Portfolio'] = portfolio_perf
+    # Use only stocks that have data available
+    valid_tickers = [t for t in tickers if t in price_data]
     
-    # Bond index proxy with lower volatility
-    bond_index = pd.DataFrame(index=dates)
-    bond_index['Close'] = 100 * (1 + np.cumsum(np.random.normal(0.0002, 0.003, len(dates))))
-    price_data['Bond Index'] = bond_index
+    if valid_tickers:
+        # Calculate correlation matrix
+        returns_data = {}
+        for ticker in valid_tickers:
+            if ticker in price_data:
+                df = price_data[ticker]
+                if not df.empty:
+                    returns_data[ticker] = df['Close'].pct_change().dropna()
+        
+        # If we have returns data for at least 2 stocks, create a correlation matrix
+        if len(returns_data) >= 2:
+            returns_df = pd.DataFrame(returns_data)
+            correlation_matrix = returns_df.corr()
+            
+            # Plot correlation matrix
+            corr_fig = visualizer.plot_correlation_matrix(correlation_matrix)
+            st.plotly_chart(corr_fig, use_container_width=True)
+            
+            st.markdown("""
+            This heatmap shows the correlation between different assets in your portfolio. 
+            Values close to 1 indicate strong positive correlation (assets move together), 
+            values close to -1 indicate strong negative correlation (assets move in opposite directions),
+            and values close to 0 indicate little correlation.
+            A well-diversified portfolio typically includes assets with lower correlation to each other.
+            """)
     
-    # Plot historical performance
-    performance_fig = visualizer.plot_historical_performance(
-        price_data, ['Portfolio', 'S&P 500', 'Bond Index'], 
-        title="Simulated 1-Year Performance (For Demonstration)"
-    )
-    st.plotly_chart(performance_fig, use_container_width=True)
+    # Rebalancing recommendations
+    st.header("Rebalancing Recommendations")
+    
+    # Get age-based recommendation
+    age_rec = risk_profiler.get_age_based_suggestion(age)
+    
+    # Compare recommended portfolio with age-based suggestion
+    current_alloc = {a['asset_class']: a['percentage'] for a in portfolio['allocations']}
+    target_alloc = PortfolioOptimizer.allocate_by_risk_profile(age_rec['suggested_profile'])
+    
+    # Get rebalancing recommendations
+    rebalance_actions = PortfolioOptimizer.rebalance_portfolio(current_alloc, target_alloc, threshold=5)
+    
+    if rebalance_actions:
+        st.markdown("Based on your age profile, you might consider the following adjustments:")
+        for asset, action in rebalance_actions.items():
+            direction = "increase" if action['action'] == 'increase' else "decrease"
+            st.markdown(f"- **{asset}**: {direction} allocation from {action['current']:.1f}% to {action['target']:.1f}% ({abs(action['difference']):.1f}% difference)")
+    else:
+        st.markdown("Your current allocation aligns well with your age profile. No significant rebalancing is needed at this time.")
     
     # Add disclaimer
-    st.caption("Disclaimer: This is a simulated performance chart for demonstration purposes only. Past performance is not indicative of future results.")
+    st.markdown("---")
+    st.caption("Disclaimer: This application is for educational purposes only and does not constitute financial advice. Past performance is not indicative of future results. Always consult with a financial advisor before making investment decisions.")
 
 else:
     # Show welcome message and instructions when the app first loads
     st.info("👈 Please fill out your financial profile in the sidebar to generate a personalized investment portfolio.")
     
-    # Show sample visualizations
-    st.header("Sample Portfolio Visualization")
+    # Show overview of what the app does with real example tickers
+    st.header("How FinAgent Works")
+    
+    st.markdown("""
+    ### Generate a Personalized Investment Portfolio
+
+    FinAgent analyzes your financial profile and risk tolerance to create a custom investment portfolio using real market data. 
+    The app leverages machine learning models to determine your optimal asset allocation and provide detailed investment rationales.
+    
+    Here's what you'll get:
+    
+    1. **Risk Profile Assessment**: Understand your investment style and appropriate risk level
+    2. **Custom Asset Allocation**: Receive a detailed breakdown of recommended investments across asset classes
+    3. **Market Sentiment Analysis**: See how current market news might impact your investments
+    4. **Historical Performance Analysis**: View how your recommended portfolio would have performed over the past year
+    5. **Rebalancing Recommendations**: Get suggestions for optimizing your portfolio based on your age and time horizon
+    """)
+    
+    # Show example of a dashboard with sample portfolio
+    st.header("Example Portfolio Visualization")
     
     # Create sample data for demonstration
     sample_allocations = [
-        {"asset_class": "US Large Cap", "percentage": 30},
-        {"asset_class": "US Bonds", "percentage": 25},
-        {"asset_class": "International Developed", "percentage": 15},
-        {"asset_class": "US Mid Cap", "percentage": 10},
-        {"asset_class": "Emerging Markets", "percentage": 10},
-        {"asset_class": "Real Estate", "percentage": 5},
-        {"asset_class": "Commodities", "percentage": 5}
+        {"asset_class": "US Large Cap", "percentage": 35, "tickers": ["AAPL", "MSFT"]},
+        {"asset_class": "US Bonds", "percentage": 25, "tickers": ["AGG", "BND"]},
+        {"asset_class": "International Developed", "percentage": 15, "tickers": ["BABA", "TSM"]},
+        {"asset_class": "US Mid Cap", "percentage": 10, "tickers": ["FTNT", "ROKU"]},
+        {"asset_class": "Emerging Markets", "percentage": 10, "tickers": ["BIDU", "PBR"]},
+        {"asset_class": "Real Estate", "percentage": 5, "tickers": ["VNQ"]},
     ]
     
-    # Sample allocation chart
+    # Display sample chart
     sample_fig = visualizer.plot_asset_allocation(sample_allocations, title="Sample Asset Allocation")
     st.plotly_chart(sample_fig, use_container_width=True)
     
-    # Add explanatory text
+    # Show how to get started
+    st.header("Getting Started")
     st.markdown("""
-    ### How FinAgent Works
-    
     1. **Complete Your Profile**: Fill out the financial profile form in the sidebar with your personal information, investment goals, and risk tolerance.
     
-    2. **ML-Powered Analysis**: Our system analyzes your inputs using machine learning models to determine your optimal risk profile and asset allocation.
+    2. **Generate Your Portfolio**: Click the "Generate Portfolio" button to create your personalized investment strategy.
     
-    3. **Market Sentiment Analysis**: We use natural language processing to analyze market news and sentiment to inform investment decisions.
+    3. **Review Your Results**: Explore your portfolio recommendations, including asset allocation, sector breakdown, and historical performance.
     
-    4. **Personalized Recommendations**: Receive a tailored investment strategy with detailed rationale and visualizations.
-    
-    5. **Portfolio Insights**: View detailed breakdowns of your recommended portfolio, including asset allocation, sector distribution, and historical performance analysis.
+    4. **Take Action**: Use the insights provided to inform your investment decisions or discuss them with your financial advisor.
     """)
 
 # Footer
 st.markdown("---")
-st.markdown("FinAgent - ML Investment Strategist | Built with free, open-source technologies")
+st.markdown("FinAgent - ML Investment Strategist | © 2025 Rituraj Singh | MIT License")
 st.caption("Disclaimer: This application is for educational purposes only and does not constitute financial advice. Always consult with a financial advisor before making investment decisions.")
